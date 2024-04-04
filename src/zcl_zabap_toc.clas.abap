@@ -34,7 +34,7 @@ CLASS zcl_zabap_toc IMPLEMENTATION.
         es_cofile   = cofiles.
 
     IF cofiles-exists = abap_false.
-      RAISE EXCEPTION TYPE zcx_zabap_exception EXPORTING message = CONV #( TEXT-e05 ) .
+      RAISE EXCEPTION TYPE zcx_zabap_exception EXPORTING message = CONV #( text-e05 ) .
     ENDIF.
 
     imported = cofiles-imported.
@@ -49,26 +49,114 @@ CLASS zcl_zabap_toc IMPLEMENTATION.
         toc = transport_header-trkorr.
 
       CATCH cx_root INTO DATA(cx).
-        RAISE EXCEPTION TYPE zcx_zabap_exception EXPORTING message = replace( val = TEXT-e01 sub = '&1' with = cx->get_text( ) ).
+        RAISE EXCEPTION TYPE zcx_zabap_exception EXPORTING message = replace( val = text-e01 sub = '&1' with = cx->get_text( ) ).
     ENDTRY.
   ENDMETHOD.
 
   METHOD import.
+
     DATA error TYPE string.
+    DATA msgv1 TYPE sy-msgv1.
+    DATA msgv2 TYPE sy-msgv2.
+    DATA targets TYPE trsysclis.
+    DATA index TYPE sy-tabix.
+    DATA rfc_subrc TYPE sy-subrc.
+    DATA exit TYPE char1.
+    DATA selfield TYPE slis_selfield.
+    DATA fieldcat TYPE slis_t_fieldcat_alv.
 
-    CALL FUNCTION 'ZABAP_TOC_UNPACK' DESTINATION target_system
+    CALL FUNCTION 'TR_GET_LIST_OF_TARGETS'
       EXPORTING
-        toc           = toc
-        target_system = target_system
+        iv_cons_target       = target_system
+        iv_follow_deliveries = abap_false
       IMPORTING
-        ret_code      = ret_code
-        error         = error.
-
-    IF strlen( error ) > 0.
-      RAISE EXCEPTION TYPE zcx_zabap_exception
-        EXPORTING
-          message = replace( val = TEXT-e03 sub = '&1' with = error ).
+        et_targets           = targets    " Table of Simple Transport Targets
+      EXCEPTIONS
+        tce_config_error     = 1
+        OTHERS               = 2.
+    IF sy-subrc <> 0.
+      error = |No target systems found for { target_system }|.
     ENDIF.
+
+    IF targets IS NOT INITIAL.
+      IF lines( targets ) = 1.
+
+        index = 1.
+
+      ELSE.
+
+        CALL FUNCTION 'REUSE_ALV_FIELDCATALOG_MERGE'
+          EXPORTING
+            i_structure_name       = 'TRSYSCLI'
+          CHANGING
+            ct_fieldcat            = fieldcat
+          EXCEPTIONS
+            inconsistent_interface = 1
+            program_error          = 2
+            OTHERS                 = 3.
+
+        IF sy-subrc <> 0. "should never be
+          MESSAGE ID sy-msgid TYPE 'E' NUMBER sy-msgno
+                  WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+        ENDIF.
+
+        APPEND INITIAL LINE TO fieldcat REFERENCE INTO DATA(field).
+        field->checkbox = abap_true.
+        field->fieldname = 'SELECTED'.
+
+        CALL FUNCTION 'REUSE_ALV_POPUP_TO_SELECT'
+          EXPORTING
+            i_title          = 'Select Transport Targets'
+            i_tabname        = 'TRSYSCLIS'
+            i_structure_name = 'TRSYSCLI'
+          IMPORTING
+            es_selfield      = selfield
+            e_exit           = exit
+          TABLES
+            t_outtab         = targets
+          EXCEPTIONS
+            program_error    = 1
+            OTHERS           = 2.
+        IF sy-subrc <> 0.
+          RETURN.
+        ENDIF.
+        IF exit = abap_true.
+          RETURN.
+        ENDIF.
+        index = selfield-tabindex.
+      ENDIF.
+
+      DATA(target) = targets[ index ].
+      DATA target_rfc_destination TYPE rscat-rfcdest.
+      target_rfc_destination = |{ target-sysname }.{ target-client }|.
+
+      CALL FUNCTION 'CAT_CHECK_RFC_DESTINATION'
+        EXPORTING
+          rfcdestination = target_rfc_destination    " System to be tested
+        IMPORTING
+          msgv1          = msgv1    " first part of a possible error message
+          msgv2          = msgv2    " second part of a possible error message
+          rfc_subrc      = rfc_subrc.    " Return code: 0=OK;1=No Dest;2=Comm.err;3=Sys.Err
+
+      IF sy-subrc = 0.
+
+        CALL FUNCTION 'ZABAP_TOC_UNPACK' DESTINATION target_rfc_destination
+          EXPORTING
+            toc           = toc
+            target_system = target_rfc_destination
+          IMPORTING
+            ret_code      = ret_code
+            error         = error.
+        IF strlen( error ) > 0.
+          RAISE EXCEPTION TYPE zcx_zabap_exception
+            EXPORTING
+              message = replace( val = text-e03 sub = '&1' with = error ).
+        ENDIF.
+      ELSE.
+        error = |{ msgv1 } { msgv2 }|.
+      ENDIF.
+    ENDIF.
+
   ENDMETHOD.
 
   METHOD import_objects.
@@ -87,10 +175,10 @@ CLASS zcl_zabap_toc IMPLEMENTATION.
     IF sy-subrc <> 0.
       RAISE EXCEPTION TYPE zcx_zabap_exception
         EXPORTING
-          message = replace( val = replace( val = TEXT-e01 sub = '&1' with = |{ sy-subrc }| ) sub = '&2' with = 'TR_READ_REQUEST_WITH_TASKS' ).
+          message = replace( val = replace( val = text-e01 sub = '&1' with = |{ sy-subrc }| ) sub = '&2' with = 'TR_READ_REQUEST_WITH_TASKS' ).
     ENDIF.
 
-    LOOP AT request_headers REFERENCE INTO DATA(request_header) where trkorr = source_transport or strkorr = source_transport.
+    LOOP AT request_headers REFERENCE INTO DATA(request_header) WHERE trkorr = source_transport OR strkorr = source_transport.
       CALL FUNCTION 'TR_COPY_COMM'
         EXPORTING
           wi_dialog                = abap_false
@@ -113,7 +201,7 @@ CLASS zcl_zabap_toc IMPLEMENTATION.
       IF sy-subrc <> 0.
         RAISE EXCEPTION TYPE zcx_zabap_exception
           EXPORTING
-            message = replace( val = replace( val = TEXT-e01 sub = '&1' with = |{ sy-subrc }| ) sub = '&2' with = 'TR_COPY_COMM' ).
+            message = replace( val = replace( val = text-e01 sub = '&1' with = |{ sy-subrc }| ) sub = '&2' with = 'TR_COPY_COMM' ).
       ENDIF.
     ENDLOOP.
   ENDMETHOD.
@@ -124,12 +212,27 @@ CLASS zcl_zabap_toc IMPLEMENTATION.
         cts_api->release( iv_trkorr = toc iv_ignore_locks = abap_true ).
 
       CATCH cx_root INTO DATA(cx).
-        RAISE EXCEPTION TYPE zcx_zabap_exception EXPORTING message = replace( val = TEXT-e02 sub = '&1' with = cx->get_text( ) ).
+        RAISE EXCEPTION TYPE zcx_zabap_exception EXPORTING message = replace( val = text-e02 sub = '&1' with = cx->get_text( ) ).
     ENDTRY.
   ENDMETHOD.
 
   METHOD get_toc_description.
-    description = replace( val = TEXT-t01 sub = '&1' with = source_transport ).
+    SELECT SINGLE as4text FROM e07t
+      INTO @DATA(as4text)
+      WHERE trkorr = @source_transport
+        AND langu = @sy-langu.
+
+    IF sy-subrc <> 0.
+
+      SELECT SINGLE as4text FROM e07t
+        INTO @as4text
+        WHERE trkorr = @source_transport.
+
+    ENDIF.
+
+    description = replace( val  = text-t01
+                           sub  = '&1'
+                           with = |{ source_transport } { as4text }| ).
   ENDMETHOD.
 
 ENDCLASS.
